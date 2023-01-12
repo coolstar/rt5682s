@@ -8,6 +8,24 @@
 static ULONG Rt5682DebugLevel = 100;
 static ULONG Rt5682DebugCatagories = DBG_INIT || DBG_PNP || DBG_IOCTL;
 
+NTSTATUS rt5682s_set_component_pll(PRTEK_CONTEXT  pDevice,
+	int pll_id, int source, unsigned int freq_in,
+	unsigned int freq_out);
+NTSTATUS rt5682s_set_tdm_slot(PRTEK_CONTEXT  pDevice, unsigned int tx_mask,
+	unsigned int rx_mask, int slots, int slot_width);
+NTSTATUS rt5682s_set_component_sysclk(PRTEK_CONTEXT  pDevice,
+	int clk_id);
+
+unsigned int __sw_hweight32(unsigned int w)
+{
+	w -= (w >> 1) & 0x55555555;
+	w = (w & 0x33333333) + ((w >> 2) & 0x33333333);
+	w = (w + (w >> 4)) & 0x0f0f0f0f;
+	return (w * 0x01010101) >> 24;
+}
+
+#define hweight_long __sw_hweight32
+
 NTSTATUS
 DriverEntry(
 	__in PDRIVER_OBJECT  DriverObject,
@@ -127,7 +145,7 @@ static Platform GetPlatform() {
 		if (model == 122 || model == 92) //92 = Apollo Lake but keep for compatibility
 			return PlatformGeminiLake;
 		else
-			return PlatformAlderLake;
+			return PlatformTigerLake;
 	}
 	return PlatformNone;
 }
@@ -303,7 +321,7 @@ NTSTATUS BOOTCODEC(
 		{RT5682S_HP_CTRL_1, 0x8080},
 		{RT5682S_DAC1_DIG_VOL, 0xecec},
 		{RT5682S_STO1_DAC_MIXER, 0x2080},
-		{RT5682S_I2S1_SDP, 0x3330}, //Reclocking should set 0x2220
+		{RT5682S_I2S1_SDP, 0x0000}, //Reclocking should set 0x2220
 		{RT5682S_TDM_ADDA_CTRL_1, 0x8000},
 		{RT5682S_TDM_ADDA_CTRL_2, 0x0080}
 	};
@@ -353,6 +371,343 @@ NTSTATUS BOOTCODEC(
 			RT5682S_4BTN_IL_HOLD_WIN_MASK | RT5682S_4BTN_IL_CLICK_WIN_MASK,
 			(btndet_delay << RT5682S_4BTN_IL_HOLD_WIN_SFT | btndet_delay));
 	}
+
+	return STATUS_SUCCESS;
+}
+
+int CsAudioArg2 = 1;
+
+VOID
+CSAudioRegisterEndpoint(
+	PRTEK_CONTEXT pDevice
+) {
+	CsAudioArg arg;
+	RtlZeroMemory(&arg, sizeof(CsAudioArg));
+	arg.argSz = sizeof(CsAudioArg);
+	arg.endpointType = CSAudioEndpointTypeHeadphone;
+	arg.endpointRequest = CSAudioEndpointRegister;
+	ExNotifyCallback(pDevice->CSAudioAPICallback, &arg, &CsAudioArg2);
+
+	arg.endpointType = CSAudioEndpointTypeMicJack;
+	ExNotifyCallback(pDevice->CSAudioAPICallback, &arg, &CsAudioArg2); //register both in case user decides to record first
+}
+
+VOID
+CsAudioCallbackFunction(
+	IN PRTEK_CONTEXT pDevice,
+	CsAudioArg* arg,
+	PVOID Argument2
+) {
+	if (!pDevice) {
+		return;
+	}
+
+	if (Argument2 == &CsAudioArg2) {
+		return;
+	}
+
+	pDevice->CSAudioManaged = TRUE;
+
+	CsAudioArg localArg;
+	RtlZeroMemory(&localArg, sizeof(CsAudioArg));
+	RtlCopyMemory(&localArg, arg, min(arg->argSz, sizeof(CsAudioArg)));
+
+	if (localArg.endpointType == CSAudioEndpointTypeDSP && localArg.endpointRequest == CSAudioEndpointRegister) {
+		CSAudioRegisterEndpoint(pDevice);
+	}
+	else if (localArg.endpointType != CSAudioEndpointTypeHeadphone &&
+		localArg.endpointType != CSAudioEndpointTypeMicJack) { //check both in case user decides to record first
+		return;
+	}
+
+	if (localArg.endpointRequest == CSAudioEndpointI2SParameters &&
+		localArg.i2sParameters.version >= 1) { //Supports version 1 or higher
+
+		Platform currentPlatform = GetPlatform();
+		if (currentPlatform == PlatformTigerLake) { //Reclock requested
+			UINT32 mclk = localArg.i2sParameters.mclk;
+			UINT32 freq = localArg.i2sParameters.frequency;
+			UINT32 slotWidth = localArg.i2sParameters.valid_bits;
+
+			UINT32 outclk = freq * 512;
+			if (mclk != outclk)
+				rt5682s_set_component_pll(pDevice, RT5682S_PLL2, RT5682S_PLL_S_MCLK, mclk, outclk);
+			rt5682s_set_tdm_slot(pDevice, 1, 1, 2, slotWidth);
+			rt5682s_set_component_sysclk(pDevice, mclk == outclk ? RT5682S_SCLK_S_MCLK : RT5682S_SCLK_S_PLL2);
+			rt5682s_reg_update(pDevice, RT5682S_PWR_ANLG_3, 
+				RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB,
+				mclk != outclk ? (RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB) : 0);
+		}
+	}
+}
+
+static const struct pll_calc_map plla_table[] = {
+	{2048000, 24576000, 0, 46, 2, true, false, false, false},
+	{256000, 24576000, 0, 382, 2, true, false, false, false},
+	{512000, 24576000, 0, 190, 2, true, false, false, false},
+	{4096000, 24576000, 0, 22, 2, true, false, false, false},
+	{1024000, 24576000, 0, 94, 2, true, false, false, false},
+	{11289600, 22579200, 1, 22, 2, false, false, false, false},
+	{1411200, 22579200, 0, 62, 2, true, false, false, false},
+	{2822400, 22579200, 0, 30, 2, true, false, false, false},
+	{12288000, 24576000, 1, 22, 2, false, false, false, false},
+	{1536000, 24576000, 0, 62, 2, true, false, false, false},
+	{3072000, 24576000, 0, 30, 2, true, false, false, false},
+	{24576000, 49152000, 4, 22, 0, false, false, false, false},
+	{3072000, 49152000, 0, 30, 0, true, false, false, false},
+	{6144000, 49152000, 0, 30, 0, false, false, false, false},
+	{49152000, 98304000, 10, 22, 0, false, true, false, false},
+	{6144000, 98304000, 0, 30, 0, false, true, false, false},
+	{12288000, 98304000, 1, 22, 0, false, true, false, false},
+	{48000000, 3840000, 10, 22, 23, false, false, false, false},
+	{24000000, 3840000, 4, 22, 23, false, false, false, false},
+	{19200000, 3840000, 3, 23, 23, false, false, false, false},
+	{38400000, 3840000, 8, 23, 23, false, false, false, false},
+};
+
+static const struct pll_calc_map pllb_table[] = {
+	{48000000, 24576000, 8, 6, 3, false, false, false, false},
+	{48000000, 22579200, 23, 12, 3, false, false, false, true},
+	{24000000, 24576000, 3, 6, 3, false, false, false, false},
+	{24000000, 22579200, 23, 26, 3, false, false, false, true},
+	{19200000, 24576000, 2, 6, 3, false, false, false, false},
+	{19200000, 22579200, 3, 5, 3, false, false, false, true},
+	{38400000, 24576000, 6, 6, 3, false, false, false, false},
+	{38400000, 22579200, 8, 5, 3, false, false, false, true},
+	{3840000, 49152000, 0, 6, 0, true, false, false, false},
+};
+
+static int find_pll_inter_combination(unsigned int f_in, unsigned int f_out,
+	struct pll_calc_map* a, struct pll_calc_map* b)
+{
+	int i, j;
+
+	/* Look at PLLA table */
+	for (i = 0; i < sizeof(plla_table) / sizeof(plla_table[0]); i++) {
+		if (plla_table[i].freq_in == f_in && plla_table[i].freq_out == f_out) {
+			memcpy(a, plla_table + i, sizeof(*a));
+			return USE_PLLA;
+		}
+	}
+
+	/* Look at PLLB table */
+	for (i = 0; i < sizeof(pllb_table) / sizeof(pllb_table[0]); i++) {
+		if (pllb_table[i].freq_in == f_in && pllb_table[i].freq_out == f_out) {
+			memcpy(b, pllb_table + i, sizeof(*b));
+			return USE_PLLB;
+		}
+	}
+
+	/* Find a combination of PLLA & PLLB */
+	for (i = (sizeof(plla_table) / sizeof(plla_table[0])) - 1; i >= 0; i--) {
+		if (plla_table[i].freq_in == f_in && plla_table[i].freq_out == 3840000) {
+			for (j = (sizeof(pllb_table) / sizeof(pllb_table[0])) - 1; j >= 0; j--) {
+				if (pllb_table[j].freq_in == 3840000 &&
+					pllb_table[j].freq_out == f_out) {
+					memcpy(a, plla_table + i, sizeof(*a));
+					memcpy(b, pllb_table + j, sizeof(*b));
+					return USE_PLLAB;
+				}
+			}
+		}
+	}
+
+	return -1;
+}
+
+
+NTSTATUS rt5682s_set_component_pll(PRTEK_CONTEXT  pDevice,
+	int pll_id, int source, unsigned int freq_in,
+	unsigned int freq_out)
+{
+	struct pll_calc_map a_map, b_map;
+
+	if (!freq_in || !freq_out) {
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "PLL disabled\n");
+		rt5682s_reg_update(pDevice, RT5682S_GLB_CLK,
+			RT5682S_SCLK_SRC_MASK, RT5682S_CLK_SRC_MCLK << RT5682S_SCLK_SRC_SFT);
+		return STATUS_SUCCESS;
+	}
+
+	switch (source) {
+	case RT5682S_PLL_S_MCLK:
+		rt5682s_reg_update(pDevice, RT5682S_GLB_CLK,
+			RT5682S_PLL_SRC_MASK, RT5682S_PLL_SRC_MCLK);
+		break;
+	case RT5682S_PLL_S_BCLK1:
+		rt5682s_reg_update(pDevice, RT5682S_GLB_CLK,
+			RT5682S_PLL_SRC_MASK, RT5682S_PLL_SRC_BCLK1);
+		break;
+	default:
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Unknown PLL Source %d\n", source);
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	int pll_comb = find_pll_inter_combination(freq_in, freq_out,
+		&a_map, &b_map);
+
+	if ((pll_id == RT5682S_PLL1 && pll_comb == USE_PLLA) ||
+		(pll_id == RT5682S_PLL2 && (pll_comb == USE_PLLB ||
+			pll_comb == USE_PLLAB))) {
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Supported freq conversion for PLL%d:(%d->%d): %d\n",
+			pll_id + 1, freq_in, freq_out, rt5682s->pll_comb);
+	}
+	else {
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Unsupported freq conversion for PLL%d:(%d->%d): %d\n",
+			pll_id + 1, freq_in, freq_out, rt5682s->pll_comb);
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	if (pll_comb == USE_PLLA || pll_comb == USE_PLLAB) {
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "PLLA: fin=%d fout=%d m_bp=%d k_bp=%d m=%d n=%d k=%d\n",
+			a_map.freq_in, a_map.freq_out, a_map.m_bp, a_map.k_bp,
+			(a_map.m_bp ? 0 : a_map.m), a_map.n, (a_map.k_bp ? 0 : a_map.k));
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_1,
+			RT5682S_PLLA_N_MASK, a_map.n);
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_2,
+			RT5682S_PLLA_M_MASK | RT5682S_PLLA_K_MASK,
+			a_map.m << RT5682S_PLLA_M_SFT | a_map.k);
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_6,
+			RT5682S_PLLA_M_BP_MASK | RT5682S_PLLA_K_BP_MASK,
+			a_map.m_bp << RT5682S_PLLA_M_BP_SFT |
+			a_map.k_bp << RT5682S_PLLA_K_BP_SFT);
+	}
+
+	if (pll_comb == USE_PLLB || pll_comb == USE_PLLAB) {
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "PLLB: fin=%d fout=%d m_bp=%d k_bp=%d m=%d n=%d k=%d byp_ps=%d sel_ps=%d\n",
+			b_map.freq_in, b_map.freq_out, b_map.m_bp, b_map.k_bp,
+			(b_map.m_bp ? 0 : b_map.m), b_map.n, (b_map.k_bp ? 0 : b_map.k),
+			b_map.byp_ps, b_map.sel_ps);
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_3,
+			RT5682S_PLLB_N_MASK, b_map.n);
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_4,
+			RT5682S_PLLB_M_MASK | RT5682S_PLLB_K_MASK,
+			b_map.m << RT5682S_PLLB_M_SFT | b_map.k);
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_6,
+			RT5682S_PLLB_SEL_PS_MASK | RT5682S_PLLB_BYP_PS_MASK |
+			RT5682S_PLLB_M_BP_MASK | RT5682S_PLLB_K_BP_MASK,
+			b_map.sel_ps << RT5682S_PLLB_SEL_PS_SFT |
+			b_map.byp_ps << RT5682S_PLLB_BYP_PS_SFT |
+			b_map.m_bp << RT5682S_PLLB_M_BP_SFT |
+			b_map.k_bp << RT5682S_PLLB_K_BP_SFT);
+	}
+
+	if (pll_comb == USE_PLLB)
+		rt5682s_reg_update(pDevice, RT5682S_PLL_CTRL_7,
+			RT5682S_PLLB_SRC_MASK, RT5682S_PLLB_SRC_DFIN);
+
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS rt5682s_set_tdm_slot(PRTEK_CONTEXT  pDevice, unsigned int tx_mask,
+	unsigned int rx_mask, int slots, int slot_width)
+{
+	unsigned int cl, val = 0, tx_slotnum;
+
+	if (tx_mask || rx_mask)
+		rt5682s_reg_update(pDevice, RT5682S_TDM_ADDA_CTRL_2, RT5682S_TDM_EN, RT5682S_TDM_EN);
+	else
+		rt5682s_reg_update(pDevice, RT5682S_TDM_ADDA_CTRL_2, RT5682S_TDM_EN, 0);
+
+	/* Tx slot configuration */
+	tx_slotnum = hweight_long(tx_mask);
+	if (tx_slotnum) {
+		if (tx_slotnum > slots) {
+			RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Invalid or oversized Tx slots.\n");
+			return STATUS_INVALID_PARAMETER;
+		}
+		val |= (tx_slotnum - 1) << RT5682S_TDM_ADC_DL_SFT;
+	}
+
+	switch (slots) {
+	case 4:
+		val |= RT5682S_TDM_TX_CH_4;
+		val |= RT5682S_TDM_RX_CH_4;
+		break;
+	case 6:
+		val |= RT5682S_TDM_TX_CH_6;
+		val |= RT5682S_TDM_RX_CH_6;
+		break;
+	case 8:
+		val |= RT5682S_TDM_TX_CH_8;
+		val |= RT5682S_TDM_RX_CH_8;
+		break;
+	case 2:
+		break;
+	default:
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	rt5682s_reg_update(pDevice, RT5682S_TDM_CTRL,
+		RT5682S_TDM_TX_CH_MASK | RT5682S_TDM_RX_CH_MASK |
+		RT5682S_TDM_ADC_DL_MASK, val);
+
+	switch (slot_width) {
+	case 8:
+		if (tx_mask || rx_mask)
+			return STATUS_INVALID_PARAMETER;
+		cl = RT5682S_I2S1_TX_CHL_8 | RT5682S_I2S1_RX_CHL_8;
+		break;
+	case 16:
+		val = RT5682S_TDM_CL_16;
+		cl = RT5682S_I2S1_TX_CHL_16 | RT5682S_I2S1_RX_CHL_16;
+		break;
+	case 20:
+		val = RT5682S_TDM_CL_20;
+		cl = RT5682S_I2S1_TX_CHL_20 | RT5682S_I2S1_RX_CHL_20;
+		break;
+	case 24:
+		val = RT5682S_TDM_CL_24;
+		cl = RT5682S_I2S1_TX_CHL_24 | RT5682S_I2S1_RX_CHL_24;
+		break;
+	case 32:
+		val = RT5682S_TDM_CL_32;
+		cl = RT5682S_I2S1_TX_CHL_32 | RT5682S_I2S1_RX_CHL_32;
+		break;
+	default:
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	rt5682s_reg_update(pDevice, RT5682S_TDM_TCON_CTRL_1,
+		RT5682S_TDM_CL_MASK, val);
+	rt5682s_reg_update(pDevice, RT5682S_I2S1_SDP,
+		RT5682S_I2S1_TX_CHL_MASK | RT5682S_I2S1_RX_CHL_MASK, cl);
+
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS rt5682s_set_component_sysclk(PRTEK_CONTEXT  pDevice,
+	int clk_id)
+{
+	unsigned int src = 0;
+
+	switch (clk_id) {
+	case RT5682S_SCLK_S_MCLK:
+		src = RT5682S_CLK_SRC_MCLK;
+		break;
+	case RT5682S_SCLK_S_PLL1:
+		src = RT5682S_CLK_SRC_PLL1;
+		break;
+	case RT5682S_SCLK_S_PLL2:
+		src = RT5682S_CLK_SRC_PLL2;
+		break;
+	case RT5682S_SCLK_S_RCCLK:
+		src = RT5682S_CLK_SRC_RCCLK;
+		break;
+	default:
+		RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Invalid clock id (%d)\n", clk_id);
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	rt5682s_reg_update(pDevice, RT5682S_GLB_CLK,
+		RT5682S_SCLK_SRC_MASK, src << RT5682S_SCLK_SRC_SFT);
+	rt5682s_reg_update(pDevice, RT5682S_ADDA_CLK_1,
+		RT5682S_I2S_M_CLK_SRC_MASK, src << RT5682S_I2S_M_CLK_SRC_SFT);
+	rt5682s_reg_update(pDevice, RT5682S_I2S2_M_CLK_CTRL_1,
+		RT5682S_I2S2_M_CLK_SRC_MASK, src << RT5682S_I2S2_M_CLK_SRC_SFT);
+
+	RtekPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Sysclk is %dHz and clock id is %d\n",
+		freq, clk_id);
 
 	return STATUS_SUCCESS;
 }
@@ -481,6 +836,57 @@ Status
 	UNREFERENCED_PARAMETER(FxResourcesTranslated);
 
 	SpbTargetDeinitialize(FxDevice, &pDevice->I2CContext);
+
+	if (pDevice->CSAudioAPICallbackObj) {
+		ExUnregisterCallback(pDevice->CSAudioAPICallbackObj);
+		pDevice->CSAudioAPICallbackObj = NULL;
+	}
+
+	if (pDevice->CSAudioAPICallback) {
+		ObfDereferenceObject(pDevice->CSAudioAPICallback);
+		pDevice->CSAudioAPICallback = NULL;
+	}
+
+	return status;
+}
+
+NTSTATUS
+OnSelfManagedIoInit(
+	_In_
+	WDFDEVICE FxDevice
+) {
+	PRTEK_CONTEXT pDevice = GetDeviceContext(FxDevice);
+	NTSTATUS status = STATUS_SUCCESS;
+
+	// CS Audio Callback
+
+	UNICODE_STRING CSAudioCallbackAPI;
+	RtlInitUnicodeString(&CSAudioCallbackAPI, L"\\CallBack\\CsAudioCallbackAPI");
+
+
+	OBJECT_ATTRIBUTES attributes;
+	InitializeObjectAttributes(&attributes,
+		&CSAudioCallbackAPI,
+		OBJ_KERNEL_HANDLE | OBJ_OPENIF | OBJ_CASE_INSENSITIVE | OBJ_PERMANENT,
+		NULL,
+		NULL
+	);
+	status = ExCreateCallback(&pDevice->CSAudioAPICallback, &attributes, TRUE, TRUE);
+	if (!NT_SUCCESS(status)) {
+
+		return status;
+	}
+
+	pDevice->CSAudioAPICallbackObj = ExRegisterCallback(pDevice->CSAudioAPICallback,
+		CsAudioCallbackFunction,
+		pDevice
+	);
+	if (!pDevice->CSAudioAPICallbackObj) {
+
+		return STATUS_NO_CALLBACK_ACTIVE;
+	}
+
+	CSAudioRegisterEndpoint(pDevice);
 
 	return status;
 }
@@ -917,6 +1323,7 @@ Rt5682EvtDeviceAdd(
 
 		pnpCallbacks.EvtDevicePrepareHardware = OnPrepareHardware;
 		pnpCallbacks.EvtDeviceReleaseHardware = OnReleaseHardware;
+		pnpCallbacks.EvtDeviceSelfManagedIoInit = OnSelfManagedIoInit;
 		pnpCallbacks.EvtDeviceD0Entry = OnD0Entry;
 		pnpCallbacks.EvtDeviceD0Exit = OnD0Exit;
 

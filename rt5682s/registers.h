@@ -1408,4 +1408,22 @@ enum {
 	RT5682S_CLK_SEL_I2S2_ASRC,
 };
 
+enum {
+	USE_PLLA,
+	USE_PLLB,
+	USE_PLLAB,
+};
+
+struct pll_calc_map {
+	unsigned int freq_in;
+	unsigned int freq_out;
+	int m;
+	int n;
+	int k;
+	BOOLEAN m_bp;
+	BOOLEAN k_bp;
+	BOOLEAN byp_ps;
+	BOOLEAN sel_ps;
+};
+
 #endif
