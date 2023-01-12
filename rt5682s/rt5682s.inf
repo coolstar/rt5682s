@@ -17,7 +17,7 @@ Class       = Media
 ClassGuid   = {4d36e96c-e325-11ce-bfc1-08002be10318}
 Provider    = CoolStar
 DriverVer   = 12/16/2021,1.0.0
-CatalogFile = rt5682ss.cat
+CatalogFile = rt5682s.cat
 PnpLockdown=1
 
 [DestinationDirs]
