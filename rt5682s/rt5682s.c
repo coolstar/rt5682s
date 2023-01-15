@@ -15,6 +15,7 @@ NTSTATUS rt5682s_set_tdm_slot(PRTEK_CONTEXT  pDevice, unsigned int tx_mask,
 	unsigned int rx_mask, int slots, int slot_width);
 NTSTATUS rt5682s_set_component_sysclk(PRTEK_CONTEXT  pDevice,
 	int clk_id);
+void rt5682s_update_reclock(IN PRTEK_CONTEXT pDevice);
 
 unsigned int __sw_hweight32(unsigned int w)
 {
@@ -331,6 +332,8 @@ NTSTATUS BOOTCODEC(
 		return status;
 	}
 
+	rt5682s_update_reclock(devContext);
+
 	//Set Jack Detect 
 
 	{
@@ -392,6 +395,24 @@ CSAudioRegisterEndpoint(
 	ExNotifyCallback(pDevice->CSAudioAPICallback, &arg, &CsAudioArg2); //register both in case user decides to record first
 }
 
+void rt5682s_update_reclock(IN PRTEK_CONTEXT pDevice) {
+	UINT32 mclk = pDevice->mclk;
+	UINT32 freq = pDevice->freq;
+	UINT32 slotWidth = pDevice->slotWidth;
+
+	if (!pDevice->ReclockRequested)
+		return;
+
+	UINT32 outclk = freq * 512;
+	if (mclk != outclk)
+		rt5682s_set_component_pll(pDevice, RT5682S_PLL2, RT5682S_PLL_S_MCLK, mclk, outclk);
+	rt5682s_set_tdm_slot(pDevice, 1, 1, 2, slotWidth);
+	rt5682s_set_component_sysclk(pDevice, mclk == outclk ? RT5682S_SCLK_S_MCLK : RT5682S_SCLK_S_PLL2);
+	rt5682s_reg_update(pDevice, RT5682S_PWR_ANLG_3,
+		RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB,
+		mclk != outclk ? (RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB) : 0);
+}
+
 VOID
 CsAudioCallbackFunction(
 	IN PRTEK_CONTEXT pDevice,
@@ -429,14 +450,12 @@ CsAudioCallbackFunction(
 			UINT32 freq = localArg.i2sParameters.frequency;
 			UINT32 slotWidth = localArg.i2sParameters.valid_bits;
 
-			UINT32 outclk = freq * 512;
-			if (mclk != outclk)
-				rt5682s_set_component_pll(pDevice, RT5682S_PLL2, RT5682S_PLL_S_MCLK, mclk, outclk);
-			rt5682s_set_tdm_slot(pDevice, 1, 1, 2, slotWidth);
-			rt5682s_set_component_sysclk(pDevice, mclk == outclk ? RT5682S_SCLK_S_MCLK : RT5682S_SCLK_S_PLL2);
-			rt5682s_reg_update(pDevice, RT5682S_PWR_ANLG_3, 
-				RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB,
-				mclk != outclk ? (RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB) : 0);
+			pDevice->mclk = mclk;
+			pDevice->freq = freq;
+			pDevice->slotWidth = slotWidth;
+			pDevice->ReclockRequested = TRUE;
+
+			rt5682s_update_reclock(pDevice);
 		}
 	}
 }
@@ -1385,6 +1404,8 @@ Rt5682EvtDeviceAdd(
 	devContext = GetDeviceContext(device);
 
 	devContext->FxDevice = device;
+
+	devContext->ReclockRequested = FALSE;
 
 	WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchManual);
 
