@@ -146,6 +146,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="registers.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="spb.h" />
     <ClInclude Include="stdint.h" />
     <ClInclude Include="trace.h" />
@@ -155,6 +156,9 @@
   <ItemGroup>
     <ClCompile Include="spb.c" />
     <ClCompile Include="rt5682s.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="rt5682s.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
