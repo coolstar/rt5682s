@@ -320,7 +320,7 @@ NTSTATUS BOOTCODEC(
 	struct reg setDefaultsAlderLake[] = {
 		//For Alder Lake
 		{RT5682S_HP_CTRL_1, 0x8080},
-		{RT5682S_DAC1_DIG_VOL, 0xecec},
+		{RT5682S_DAC1_DIG_VOL, 0xffff},
 		{RT5682S_STO1_DAC_MIXER, 0x2080},
 		{RT5682S_I2S1_SDP, 0x0000}, //Reclocking should set 0x2220
 		{RT5682S_TDM_ADDA_CTRL_1, 0x8000},
