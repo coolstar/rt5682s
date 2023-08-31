@@ -141,7 +141,7 @@ static Platform GetPlatform() {
 	}
 
 	if (strcmp(vendorName, "AuthenticAMD") == 0) {
-		return PlatformRyzen; //family 23 for Picasso / Dali
+		return PlatformRyzen; //family 23 for Mendocino
 	} else if (strcmp(vendorName, "GenuineIntel") == 0) {
 		if (model == 122 || model == 92) //92 = Apollo Lake but keep for compatibility
 			return PlatformGeminiLake;
@@ -333,6 +333,31 @@ NTSTATUS BOOTCODEC(
 	}
 
 	rt5682s_update_reclock(devContext);
+
+	if (GetPlatform() == PlatformRyzen) {
+		struct reg setDefaultsMendocino[] = {
+			//For Mendocino
+			{RT5682S_DAC1_DIG_VOL, 0xeaea},
+			{RT5682S_STO1_ADC_DIG_VOL, 0x6565},
+			{RT5682S_STO1_DAC_MIXER, 0xa0a0},
+			{RT5682S_A_DAC1_MUX, 0x0311},
+			{RT5682S_REC_MIXER, 0x0d40}
+		};
+
+		status = rt5682s_reg_burstWrite(devContext, setDefaultsMendocino, sizeof(setDefaultsMendocino) / sizeof(struct reg));
+		if (!NT_SUCCESS(status)) {
+			return status;
+		}
+
+		rt5682s_reg_update(devContext, RT5682S_I2S1_SDP, RT5682S_I2S_DF_MASK,
+			RT5682S_I2S_DF_PCM_A);
+		rt5682s_reg_update(devContext, RT5682S_TDM_TCON_CTRL_1, RT5682S_TDM_BCLK_MS1_MASK | RT5682S_TDM_DF_MASK,
+			RT5682S_TDM_BCLK_MS1_128 | RT5682S_TDM_DF_PCM_A);
+
+		rt5682s_set_component_pll(devContext, RT5682S_PLL2, RT5682S_PLL_S_MCLK, 48000000, 48000 * 512);
+		rt5682s_set_tdm_slot(devContext, 3, 3, 8, 16);
+		rt5682s_set_component_sysclk(devContext, RT5682S_SCLK_S_PLL2);
+	}
 
 	//Set Jack Detect 
 
