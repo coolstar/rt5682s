@@ -141,7 +141,7 @@ static Platform GetPlatform() {
 	}
 
 	if (strcmp(vendorName, "AuthenticAMD") == 0) {
-		return PlatformRyzen; //family 23 for Mendocino
+		return PlatformRyzen; //family 23 for Mendocino (model 160)
 	} else if (strcmp(vendorName, "GenuineIntel") == 0) {
 		if (model == 122 || model == 92) //92 = Apollo Lake but keep for compatibility
 			return PlatformGeminiLake;
