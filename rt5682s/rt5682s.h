@@ -177,6 +177,8 @@ typedef struct _RTEK_CONTEXT
 
 	BOOLEAN CSAudioManaged;
 
+	BOOLEAN HeadphonePlaying;
+
 	BOOLEAN ReclockRequested;
 	UINT32 mclk;
 	UINT32 freq;

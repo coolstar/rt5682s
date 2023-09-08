@@ -468,6 +468,17 @@ void rt5682s_update_reclock(IN PRTEK_CONTEXT pDevice) {
 		mclk != outclk ? (RT5682S_PWR_LDO_PLLB | RT5682S_PWR_BIAS_PLLB | RT5682S_RSTB_PLLB | RT5682S_PWR_PLLB) : 0);
 }
 
+void StartStopSpeaker(
+	IN PRTEK_CONTEXT pDevice, 
+	IN BOOLEAN start) {
+	CsAudioArg localArg;
+	RtlZeroMemory(&localArg, sizeof(CsAudioArg));
+	localArg.argSz = sizeof(localArg);
+	localArg.endpointType = CSAudioEndpointTypeSpeaker;
+	localArg.endpointRequest = start ? CSAudioEndpointStart : CSAudioEndpointStop;
+	ExNotifyCallback(pDevice->CSAudioAPICallback, &localArg, &CsAudioArg2);
+}
+
 VOID
 CsAudioCallbackFunction(
 	IN PRTEK_CONTEXT pDevice,
@@ -494,6 +505,14 @@ CsAudioCallbackFunction(
 	else if (localArg.endpointType != CSAudioEndpointTypeHeadphone &&
 		localArg.endpointType != CSAudioEndpointTypeMicJack) { //check both in case user decides to record first
 		return;
+	}
+
+	if ((localArg.endpointRequest == CSAudioEndpointStart || localArg.endpointRequest == CSAudioEndpointStop) &&
+		localArg.endpointType == CSAudioEndpointTypeHeadphone) {
+		pDevice->HeadphonePlaying = (localArg.endpointRequest == CSAudioEndpointStart);
+		if (pDevice->JackType == 0 && GetPlatform() == PlatformRyzenCezanne) {
+			StartStopSpeaker(pDevice, localArg.endpointRequest == CSAudioEndpointStart);
+		}
 	}
 
 	if (localArg.endpointRequest == CSAudioEndpointI2SParameters &&
@@ -1328,6 +1347,15 @@ RtekJdetWorkItem(
 	PRTEK_CONTEXT pDevice = GetDeviceContext(Device);
 
 	rt5682s_jackdetect(pDevice);
+
+	if (GetPlatform() == PlatformRyzenCezanne) { //Speakers are managed by jack driver on Cezanne
+		if (pDevice->JackType) {
+			StartStopSpeaker(pDevice, FALSE);
+		}
+		else {
+			StartStopSpeaker(pDevice, pDevice->HeadphonePlaying);
+		}
+	}
 }
 
 BOOLEAN OnInterruptIsr(
