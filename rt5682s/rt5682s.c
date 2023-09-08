@@ -143,6 +143,8 @@ static Platform GetPlatform() {
 	if (strcmp(vendorName, "AuthenticAMD") == 0) {
 		if (family == 25 && model == 80)
 			return PlatformRyzenCezanne;
+		else if (family == 23 && (model == 32 || model == 24))
+			return PlatformRyzenDali; //Picasso is model 24 but add that too
 		else
 			return PlatformRyzenMendocino; //family 23 for Mendocino (model 160)
 	} else if (strcmp(vendorName, "GenuineIntel") == 0) {
@@ -337,7 +339,9 @@ NTSTATUS BOOTCODEC(
 
 	rt5682s_update_reclock(devContext);
 
-	if (GetPlatform() == PlatformRyzenMendocino) {
+	Platform platform = GetPlatform();
+
+	if (platform == PlatformRyzenMendocino) {
 		struct reg setDefaultsMendocino[] = {
 			//For Mendocino
 			{RT5682S_DAC1_DIG_VOL, 0xeaea},
@@ -361,7 +365,7 @@ NTSTATUS BOOTCODEC(
 		rt5682s_set_tdm_slot(devContext, 3, 3, 8, 16);
 		rt5682s_set_component_sysclk(devContext, RT5682S_SCLK_S_PLL2);
 	}
-	else if (GetPlatform() == PlatformRyzenCezanne) {
+	else if (platform == PlatformRyzenCezanne || platform == PlatformRyzenDali) {
 		struct reg setDefaultsCezanne[] = {
 			//For Cezanne
 			{RT5682S_DAC1_DIG_VOL, 0xfcfc},

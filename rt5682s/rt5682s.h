@@ -72,6 +72,7 @@ typedef struct CSAUDIOARG {
 
 typedef enum platform {
 	PlatformNone,
+	PlatformRyzenDali,
 	PlatformRyzenCezanne,
 	PlatformRyzenMendocino,
 	PlatformGeminiLake,
