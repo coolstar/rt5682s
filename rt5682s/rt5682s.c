@@ -141,7 +141,10 @@ static Platform GetPlatform() {
 	}
 
 	if (strcmp(vendorName, "AuthenticAMD") == 0) {
-		return PlatformRyzen; //family 23 for Mendocino (model 160)
+		if (family == 25 && model == 80)
+			return PlatformRyzenCezanne;
+		else
+			return PlatformRyzenMendocino; //family 23 for Mendocino (model 160)
 	} else if (strcmp(vendorName, "GenuineIntel") == 0) {
 		if (model == 122 || model == 92) //92 = Apollo Lake but keep for compatibility
 			return PlatformGeminiLake;
@@ -334,7 +337,7 @@ NTSTATUS BOOTCODEC(
 
 	rt5682s_update_reclock(devContext);
 
-	if (GetPlatform() == PlatformRyzen) {
+	if (GetPlatform() == PlatformRyzenMendocino) {
 		struct reg setDefaultsMendocino[] = {
 			//For Mendocino
 			{RT5682S_DAC1_DIG_VOL, 0xeaea},
@@ -356,6 +359,33 @@ NTSTATUS BOOTCODEC(
 
 		rt5682s_set_component_pll(devContext, RT5682S_PLL2, RT5682S_PLL_S_MCLK, 48000000, 48000 * 512);
 		rt5682s_set_tdm_slot(devContext, 3, 3, 8, 16);
+		rt5682s_set_component_sysclk(devContext, RT5682S_SCLK_S_PLL2);
+	}
+	else if (GetPlatform() == PlatformRyzenCezanne) {
+		struct reg setDefaultsCezanne[] = {
+			//For Cezanne
+			{RT5682S_DAC1_DIG_VOL, 0xfcfc},
+			{RT5682S_STO1_ADC_DIG_VOL, 0x6565},
+			{RT5682S_STO1_DAC_MIXER, 0xa0a0},
+			{RT5682S_A_DAC1_MUX, 0x0311},
+			{RT5682S_REC_MIXER, 0x0d40},
+
+			//Set Clocks for Cezanne
+			{RT5682S_I2S1_SDP, 0x3300},
+			{RT5682S_ADDA_CLK_1, 0x1121},
+			{RT5682S_TDM_ADDA_CTRL_2, 0x0000},
+			{RT5682S_TDM_TCON_CTRL_1, 0x0101}
+		};
+
+		status = rt5682s_reg_burstWrite(devContext, setDefaultsCezanne, sizeof(setDefaultsCezanne) / sizeof(struct reg));
+		if (!NT_SUCCESS(status)) {
+			return status;
+		}
+
+		rt5682s_reg_update(devContext, RT5682S_TDM_TCON_CTRL_1, RT5682S_TDM_BCLK_MS1_MASK | RT5682S_TDM_DF_MASK,
+			RT5682S_TDM_BCLK_MS1_64 | RT5682S_TDM_DF_I2S);
+
+		rt5682s_set_component_pll(devContext, RT5682S_PLL2, RT5682S_PLL_S_MCLK, 48000000, 48000 * 512);
 		rt5682s_set_component_sysclk(devContext, RT5682S_SCLK_S_PLL2);
 	}
 
