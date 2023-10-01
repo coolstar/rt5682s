@@ -165,6 +165,8 @@ typedef struct _RTEK_CONTEXT
 
 	WDFQUEUE ReportQueue;
 
+	WDFQUEUE IdleQueue;
+
 	SPB_CONTEXT I2CContext;
 
 	WDFINTERRUPT Interrupt;
@@ -188,6 +190,20 @@ typedef struct _RTEK_CONTEXT
 } RTEK_CONTEXT, *PRTEK_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(RTEK_CONTEXT, GetDeviceContext)
+
+//
+// Power Idle Workitem context
+// 
+typedef struct _IDLE_WORKITEM_CONTEXT
+{
+	// Handle to a WDF device object
+	WDFDEVICE FxDevice;
+
+	// Handle to a WDF request object
+	WDFREQUEST FxRequest;
+
+} IDLE_WORKITEM_CONTEXT, * PIDLE_WORKITEM_CONTEXT;
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(IDLE_WORKITEM_CONTEXT, GetIdleWorkItemContext)
 
 //
 // Function definitions
@@ -263,6 +279,11 @@ Rt5682GetFeature(
 PCHAR
 DbgHidInternalIoctlString(
 	IN ULONG        IoControlCode
+);
+
+VOID
+RtekCompleteIdleIrp(
+	IN PRTEK_CONTEXT FxDeviceContext
 );
 
 //
